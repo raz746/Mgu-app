@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, filedialog
-import subprocess, json, pathlib, threading, queue, zipfile, tarfile, shutil
+import subprocess, json, pathlib, threading, queue, zipfile, tarfile, shutil, hashlib, datetime, io
 
 class App:
  def __init__(self, root):
@@ -16,6 +16,7 @@ class App:
   ttk.Button(b,text='Check SSH & MGU',command=self.detect).pack(side='left',padx=3)
   ttk.Button(b,text='Inspect App Package',command=self.inspect).pack(side='left',padx=3)
   ttk.Button(b,text='Export Report',command=self.export).pack(side='left',padx=3)
+  ttk.Button(b,text='Backup Coding',command=self.backup).pack(side='left',padx=3)
   self.out=tk.Text(f,wrap='word');self.out.pack(fill='both',expand=True);self.report={'app':'BMW MGU App Manager v0.2','mode':'read-only'}
   self.log('Ready. Requires Windows OpenSSH and an authorized SSH key. No install commands are executed.')
   self.root.after(100,self.poll)
@@ -69,6 +70,44 @@ class App:
    self.log('Package inspected: '+info['filename']);self.log('Manifest: '+str(info['manifest_found'])+'; ID8 declared: '+str(info['id8_declared']))
    self.log('Manifest declaration alone does not prove safe or functional compatibility.')
   except Exception as e:self.log('Package inspection failed: '+str(e))
+ def backup(self):
+  from tkinter import simpledialog, messagebox
+  messagebox.showinfo('Backup scope','This is an SSH file backup, not a verified full BMW coding/CAFD/NCD backup. Select only known coding/configuration files. No remote files will be changed.')
+  remote=simpledialog.askstring('Remote file','Enter the exact absolute path of ONE known coding/configuration file on the MGU (no directories):')
+  if not remote:return
+  if not remote.startswith('/') or any(c in remote for c in '\\r\\n\\x00') or remote.endswith('/') or len(remote)>512:
+   messagebox.showerror('Invalid path','Enter one absolute remote file path.');return
+  if any(x in remote.lower() for x in ('/etc/shadow','/etc/ssh/','private_key','id_rsa','id_ed25519','password','credential')):
+   messagebox.showerror('Protected path','Credential and SSH key files are excluded.');return
+  dest=filedialog.askdirectory(title='Select local backup folder')
+  if not dest:return
+  threading.Thread(target=self._backup,args=(remote,dest),daemon=True).start()
+ def _backup(self,remote,dest):
+  import shlex
+  host=self.host.get().strip();user=self.user.get().strip();key=self.key.get().strip()
+  try:port=int(self.port.get());assert 1<=port<=65535
+  except Exception:self.log('Invalid SSH port');return
+  if not host or not user or not key or not pathlib.Path(key).is_file() or not shutil.which('ssh'):
+   self.log('Backup requires valid SSH connection settings and OpenSSH.');return
+  # SSH command arguments are quoted; no shell expansion of the requested path.
+  cmd=['ssh','-F','none','-i',key,'-p',str(port),'-o','BatchMode=yes','-o','ConnectTimeout=5','-o','StrictHostKeyChecking=yes','-o','NumberOfPasswordPrompts=0',f'{user}@{host}','cat -- '+shlex.quote(remote)]
+  self.log('Reading one selected remote file; no remote writes...')
+  try:
+   p=subprocess.run(cmd,capture_output=True,timeout=90,stdin=subprocess.DEVNULL)
+   if p.returncode!=0:
+    self.log('Backup failed: '+p.stderr.decode('utf-8','replace')[:700]);return
+   if len(p.stdout)>50*1024*1024:self.log('Backup file exceeds 50 MiB limit.');return
+   stamp=datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+   folder=pathlib.Path(dest)/('MGU_backup_'+stamp);folder.mkdir(mode=0o700)
+   filename=pathlib.PurePosixPath(remote).name
+   output=folder/filename;output.write_bytes(p.stdout)
+   digest=hashlib.sha256(p.stdout).hexdigest()
+   manifest={'type':'selected SSH file backup, not full BMW coding backup','source_path':remote,'sha256':digest,'bytes':len(p.stdout),'created_local':stamp,'restore_supported':False}
+   (folder/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+   if hashlib.sha256(output.read_bytes()).hexdigest()!=digest:raise RuntimeError('Verification mismatch')
+   self.log('Backup saved and SHA-256 verified: '+str(folder))
+   self.log('Keep this folder private. No restore or vehicle modifications performed.')
+  except Exception as e:self.log('Backup error: '+str(e))
  def export(self):
   p=filedialog.asksaveasfilename(defaultextension='.json',filetypes=[('JSON','*.json')],initialfile='mgu_compatibility_report.json')
   if p:pathlib.Path(p).write_text(json.dumps(self.report,indent=2),encoding='utf-8');self.log('Report saved.')
