@@ -4,7 +4,7 @@ import subprocess, json, pathlib, threading, queue, zipfile, tarfile, shutil, ha
 
 class App:
  def __init__(self, root):
-  self.root=root; root.title('BMW MGU App Manager v0.2 — Read-only'); root.geometry('780x600')
+  self.root=root; root.title('BMW MGU App Manager v0.3 — Guided Workflow'); root.geometry('900x650')
   self.q=queue.Queue(); self.host=tk.StringVar(value='172.16.222.97'); self.port=tk.StringVar(value='22'); self.user=tk.StringVar(value='root'); self.key=tk.StringVar()
   f=ttk.Frame(root,padding=14); f.pack(fill='both',expand=True)
   ttk.Label(f,text='BMW MGU App Manager',font=('Segoe UI',18,'bold')).pack(anchor='w')
@@ -17,7 +17,8 @@ class App:
   ttk.Button(b,text='Inspect App Package',command=self.inspect).pack(side='left',padx=3)
   ttk.Button(b,text='Export Report',command=self.export).pack(side='left',padx=3)
   ttk.Button(b,text='Backup Coding',command=self.backup).pack(side='left',padx=3)
-  self.out=tk.Text(f,wrap='word');self.out.pack(fill='both',expand=True);self.report={'app':'BMW MGU App Manager v0.2','mode':'read-only'}
+  ttk.Button(b,text='Workflow',command=self.workflow).pack(side='left',padx=3)
+  self.out=tk.Text(f,wrap='word');self.out.pack(fill='both',expand=True);self.report={'app':'BMW MGU App Manager v0.3','mode':'read-only'}
   self.log('Ready. Requires Windows OpenSSH and an authorized SSH key. No install commands are executed.')
   self.root.after(100,self.poll)
  def log(self,s):self.q.put(s)
@@ -108,6 +109,54 @@ class App:
    self.log('Backup saved and SHA-256 verified: '+str(folder))
    self.log('Keep this folder private. No restore or vehicle modifications performed.')
   except Exception as e:self.log('Backup error: '+str(e))
+ def workflow(self):
+  from tkinter import messagebox
+  w=tk.Toplevel(self.root);w.title('MGU Installation Workflow — v0.3');w.geometry('700x560')
+  frame=ttk.Frame(w,padding=16);frame.pack(fill='both',expand=True)
+  ttk.Label(frame,text='MGU App Installation — Guided Workflow',font=('Segoe UI',15,'bold')).pack(anchor='w')
+  ttk.Label(frame,text='No installation or restoration occurs in this release.').pack(anchor='w',pady=4)
+  stages=[
+   ('1. Connect to MGU','Run SSH connectivity check','connect'),
+   ('2. Identify firmware','Review detected OS and architecture; exact BMW firmware unverified','identify'),
+   ('3. Backup coding','Back up selected known configuration files; full coding backup not verified','backup'),
+   ('4. Verify backup','Validate local backup manifest and SHA-256 checksum','verify'),
+   ('5. Select custom app','Inspect local package manifest','package'),
+   ('6. Check compatibility','Review declared ID8 support; runtime compatibility unverified','compat'),
+   ('7. Prepare installation','Generate a local readiness report; deployment disabled','prepare'),
+   ('8. Install app','BLOCKED until verified deployment backend and ID8 support','install'),
+   ('9. Post-install checks','BLOCKED until installation is implemented','post'),
+   ('10. Restore backup','BLOCKED; restore requires verified full coding recovery method','restore')]
+  status=tk.StringVar(value='Choose a workflow stage.')
+  def action(kind):
+   if kind=='connect':self.detect();status.set('SSH check started; see main window log.')
+   elif kind=='identify':status.set('Run connection check; system information appears in report. BMW firmware remains unverified.')
+   elif kind=='backup':self.backup();status.set('Selected-file backup started or cancelled.')
+   elif kind=='verify':
+    p=filedialog.askdirectory(title='Select MGU backup folder')
+    if not p:return
+    try:
+     folder=pathlib.Path(p);manifest=json.loads((folder/'manifest.json').read_text(encoding='utf-8'))
+     name=pathlib.PurePosixPath(manifest['source_path']).name
+     good=hashlib.sha256((folder/name).read_bytes()).hexdigest()==manifest['sha256']
+     status.set('Backup SHA-256 '+('VERIFIED' if good else 'FAILED'))
+     self.report['backup_verification']={'verified':good,'type':manifest.get('type','unknown')}
+    except Exception as e:status.set('Backup verification failed: '+str(e))
+   elif kind=='package':self.inspect();status.set('Package inspection opened.')
+   elif kind=='compat':
+    pkg=self.report.get('package',{})
+    status.set('ID8 declared: '+str(pkg.get('id8_declared',False))+'; actual deployment compatibility UNVERIFIED.')
+   elif kind=='prepare':
+    self.report['installation_readiness']={'ssh_connected':self.report.get('connection',{}).get('ssh_returncode')==0,'package_inspected':bool(self.report.get('package')),'backup_verified':self.report.get('backup_verification',{}).get('verified',False),'deployment_supported':False,'ready_to_install':False}
+    self.export();status.set('Readiness report exported. Installation remains blocked.')
+   else:messagebox.showwarning('Unavailable','This operation is intentionally disabled until the MGU deployment/recovery method is verified.')
+  for title,description,kind in stages:
+   row=ttk.Frame(frame);row.pack(fill='x',pady=4)
+   btn=ttk.Button(row,text=title,width=25,command=lambda k=kind:action(k))
+   btn.pack(side='left',padx=(0,12))
+   if kind in ('install','post','restore'):btn.state(['disabled'])
+   ttk.Label(row,text=description,wraplength=420).pack(side='left',fill='x',expand=True)
+  ttk.Separator(frame).pack(fill='x',pady=10)
+  ttk.Label(frame,textvariable=status,wraplength=640).pack(anchor='w')
  def export(self):
   p=filedialog.asksaveasfilename(defaultextension='.json',filetypes=[('JSON','*.json')],initialfile='mgu_compatibility_report.json')
   if p:pathlib.Path(p).write_text(json.dumps(self.report,indent=2),encoding='utf-8');self.log('Report saved.')
