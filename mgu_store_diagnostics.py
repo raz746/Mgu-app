@@ -542,8 +542,8 @@ class App(tk.Tk):
                 output = ("Upstream SSH status (read-only action)\\n" +
                           (p.stdout + "\\n" + p.stderr).strip())
                 if p.returncode == 0:
-                    dtc = re.search(r"DTC B7F8E5[^\\r\\n]*:\\s*(PRESENT|absent)", output, re.I)
-                    state = re.search(r"Status: debug/SSH-open state is\\s*(ON|OFF[^\\r\\n]*)", output, re.I)
+                    dtc = re.search(r"DTC B7F8E5[^\r\n]*?:\s*(present|absent)\b", output, re.I)
+                    state = re.search(r"Status:\s*debug/SSH-open state is\s*(ON|OFF)\b", output, re.I)
                     self.q.put(("__UPSTREAM_STATE__", (
                         dtc.group(1) if dtc else "Not reported",
                         state.group(1).strip() if state else "Not reported")))
