@@ -23,7 +23,6 @@ class App(tk.Tk):
         self.host = tk.StringVar(value="")
         self.key = tk.StringVar()
         self.script = tk.StringVar()
-        self.status_tool = tk.StringVar()
         self.gateway = tk.StringVar(value='Not detected')
         self.mgu_ip = tk.StringVar(value='Not detected')
         self.variant = tk.StringVar(value='Unknown')
@@ -31,7 +30,7 @@ class App(tk.Tk):
         frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="MGU Store — Read-only Diagnostics", font=("Segoe UI", 17, "bold")).pack(anchor="w")
-        for name, variable in [("Head-unit SSH host", self.host), ("Private SSH key", self.key), ("Official mgu-install.js", self.script), ("Official ssh_enable.py", self.status_tool)]:
+        for name, variable in [("Head-unit SSH host", self.host), ("Private SSH key", self.key), ("Official mgu-install.js", self.script)]:
             row = ttk.Frame(frame)
             row.pack(fill="x", pady=5)
             ttk.Label(row, text=name, width=23).pack(side="left")
@@ -157,33 +156,29 @@ class App(tk.Tk):
         self.run_task(task)
 
     def identify_mgu(self):
-        """Only invoke upstream status; never invoke flash, enable or coding writes."""
-        tool = Path(self.status_tool.get().strip()).expanduser()
-        if not tool.is_file() or tool.name.lower() != "ssh_enable.py":
-            messagebox.showerror("MGU identity", "Select the official ssh_enable.py script from the idrive7-8-ssh-root project.")
+        """Read-only MGU SVK and IP over the discovered BMW gateway."""
+        from mgu_readonly import read_identity
+        gateway = self.gateway.get().strip()
+        try:
+            ipaddress.IPv4Address(gateway)
+        except ValueError:
+            messagebox.showerror("MGU identity", "Discover BMW Gateway first.")
             return
         def task():
-            result = subprocess.run([sys.executable, str(tool), "status"],
-                                    cwd=str(tool.parent), capture_output=True,
-                                    text=True, timeout=60, stdin=subprocess.DEVNULL, shell=False)
-            output = (result.stdout + "\n" + result.stderr).strip()
-            gateway = re.search(r"Connecting to ENET gateway\s+(\d+\.\d+\.\d+\.\d+)", output)
-            mgu = re.search(r"MGU IP:\s*(\d+\.\d+\.\d+\.\d+)", output)
-            btld = re.search(r"BTLD\s+([0-9A-Fa-f_.]+)", output)
-            if gateway:
-                self.q.put(("__GATEWAY__", gateway.group(1)))
-            if mgu:
-                self.q.put(("__MGU__", mgu.group(1)))
-            if btld:
-                version = btld.group(1)
-                self.q.put(("__SOFTWARE__", version))
-                family = "ID7 family (verify)" if "_030." in version else ("ID8 family (BDC3/BCP unresolved)" if "_036." in version else "Unknown")
-                self.q.put(("__VARIANT__", family))
-            if result.returncode:
-                output += "\nStatus command exited with code " + str(result.returncode)
-            if not btld:
-                output += "\nNo BTLD parsed; variant not identified."
-            return output
+            result = read_identity(gateway)
+            btld = ", ".join(result["btld"]) or "Not reported"
+            self.q.put(("__SOFTWARE__", btld))
+            ip = result["ip"]
+            if ip:
+                self.q.put(("__MGU__", ip))
+            self.q.put(("__VARIANT__", "MGU (ID7/ID8 variant not yet verified)"))
+            rows = [f"MGU responded through gateway {gateway}:6801",
+                    "BTLD: " + btld,
+                    "MGU IP: " + (ip or "Not returned"),
+                    "Variant: unverified; BTLD alone is insufficient to identify BDC3 vs BCP.",
+                    "SVK records:"]
+            rows.extend(f"  {kind}: {value}" for kind,value in result["records"])
+            return "\n".join(rows)
         self.run_task(task)
 
     def run_task(self, task):
