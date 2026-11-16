@@ -9,6 +9,7 @@ import shutil
 import re
 import sys
 import hashlib
+import os
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -35,6 +36,7 @@ class App(tk.Tk):
         self.compatibility = tk.StringVar(value='Pending identification')
         self.backup_state = tk.StringVar(value='Not selected')
         self.backup_kind = tk.StringVar(value='BimmerCode (Android)')
+        self.load_backup_preference()
         frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="MGU Store — Read-only Diagnostics", font=("Segoe UI", 17, "bold")).pack(anchor="w")
@@ -67,6 +69,35 @@ class App(tk.Tk):
         self.output = tk.Text(frame, height=17, state="disabled", wrap="word")
         self.output.pack(fill="both", expand=True, pady=8)
         self.after(100, self.drain)
+
+    @staticmethod
+    def backup_settings_path():
+        """Use per-user AppData, not the executable's directory."""
+        base = os.environ.get("APPDATA")
+        if not base:
+            base = str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "MGUStoreDiagnostics" / "settings.json"
+
+    def load_backup_preference(self):
+        """Restore only the user's declared backup source; never imply verification."""
+        try:
+            data = json.loads(self.backup_settings_path().read_text(encoding="utf-8"))
+            source = data.get("external_backup_source")
+            valid = ("BimmerCode (Android)", "BimmerCode (iOS)",
+                     "E-Sys (external device)", "Other external backup")
+            if source in valid:
+                self.backup_kind.set(source)
+                self.backup_state.set(source + " — user-confirmed; restore unverified")
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def save_backup_preference(self, source):
+        path = self.backup_settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"external_backup_source": source}, indent=2),
+                             encoding="utf-8")
+        temporary.replace(path)
 
     def pick(self, var):
         path = filedialog.askopenfilename()
@@ -251,6 +282,11 @@ class App(tk.Tk):
                   wraplength=370).pack(anchor="w", pady=12)
         def confirm():
             source = self.backup_kind.get()
+            try:
+                self.save_backup_preference(source)
+            except OSError as exc:
+                messagebox.showwarning("Backup preference", "Could not save backup preference: " + str(exc))
+                return
             self.backup_state.set(source + " — user-confirmed; restore unverified")
             self.output.configure(state="normal")
             self.output.insert("end", "External MGU coding backup recorded: " + source +
