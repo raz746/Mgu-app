@@ -28,6 +28,9 @@ class App(tk.Tk):
         self.mgu_ip = tk.StringVar(value='Not detected')
         self.variant = tk.StringVar(value='Unknown')
         self.software = tk.StringVar(value='Not read')
+        self.hardware = tk.StringVar(value='Not read')
+        self.cafd = tk.StringVar(value='Not read')
+        self.arch_hint = tk.StringVar(value='Unknown / not confirmed')
         self.ssh_status = tk.StringVar(value='Not checked')
         self.compatibility = tk.StringVar(value='Pending identification')
         self.backup_state = tk.StringVar(value='Not selected')
@@ -51,10 +54,11 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Read MGU Store Status", command=self.status).pack(side="left")
         ttk.Button(buttons, text="Verify Backup File", command=self.verify_backup).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="External Backup", command=self.external_backup).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Compatibility Details", command=self.compatibility_details).pack(side="left", padx=(8, 0))
         self.state = tk.StringVar(value="Ready — no changes will be made")
         dashboard = ttk.LabelFrame(frame, text="MGU Connection Dashboard", padding=8)
         dashboard.pack(fill="x", pady=6)
-        for label, value in [("Gateway", self.gateway), ("MGU IP", self.mgu_ip), ("Variant", self.variant), ("BTLD", self.software), ("SSH", self.ssh_status), ("Compatibility", self.compatibility), ("Backup", self.backup_state)]:
+        for label, value in [("Gateway", self.gateway), ("MGU IP", self.mgu_ip), ("Variant", self.variant), ("BTLD", self.software), ("HWEL", self.hardware), ("CAFD", self.cafd), ("SSH", self.ssh_status), ("Compatibility", self.compatibility), ("Backup", self.backup_state)]:
             line = ttk.Frame(dashboard)
             line.pack(fill="x")
             ttk.Label(line, text=label + ":", width=12).pack(side="left")
@@ -178,12 +182,14 @@ class App(tk.Tk):
             ip = result["ip"]
             if ip:
                 self.q.put(("__MGU__", ip))
-            self.q.put(("__VARIANT__", "MGU family unverified (ID7/ID8)"))
+            self.q.put(("__VARIANT__", "MGU ID7/ID8 architecture not established"))
+            self.q.put(("__HWEL__", ", ".join(v for k, v in result["records"] if k == "HWEL") or "Not reported"))
+            self.q.put(("__CAFD__", ", ".join(v for k, v in result["records"] if k == "CAFD") or "Not reported"))
             self.q.put(("__COMPAT__", self.classify_compatibility(result["records"])))
             rows = [f"MGU responded through gateway {gateway}:6801",
                     "BTLD: " + btld,
                     "MGU IP: " + (ip or "Not returned"),
-                    "Variant: unverified; BTLD alone is insufficient to identify BDC3 vs BCP.",
+                    "Variant: unverified; software and CAFD alone do not establish ID8-BDC3 vs ID8-BCP.",
                     "SVK records:"]
             rows.extend(f"  {kind}: {value}" for kind,value in result["records"])
             if result["parse_error"]:
@@ -201,15 +207,31 @@ class App(tk.Tk):
 
     @staticmethod
     def classify_compatibility(records):
-        """Informational classification, never authorization to flash."""
+        """Read-only upstream catalog gate, NOT a flash approval or architecture proof."""
         bootloaders = [value for kind, value in records if kind == "BTLD"]
         if not bootloaders:
-            return "Unknown — no BTLD record"
-        if any("_036." in value for value in bootloaders):
-            return "036 family detected — support unverified"
-        if any("_030." in value for value in bootloaders):
-            return "030 family detected — support unverified"
-        return "BTLD detected — compatibility unverified"
+            return "Unknown: no BTLD record"
+        ids = [value.split("_", 1)[0].upper() for value in bootloaders]
+        if "00003F36" not in ids:
+            return "BTLD outside upstream 00003F36 gate; unverified"
+        return "00003F36 catalog match; architecture unverified"
+
+    def compatibility_details(self):
+        """Explain evidence and require independent variant verification."""
+        btld = self.software.get()
+        hwel = self.hardware.get()
+        cafd = self.cafd.get()
+        messagebox.showinfo(
+            "MGU Compatibility — Read Only",
+            "Observed MGU identity:\\n"
+            f"BTLD: {btld}\\nHWEL: {hwel}\\nCAFD: {cafd}\\n\\n"
+            "Upstream SSH project checks the 00003F36 BTLD catalog identifier. "
+            "A matching identifier does NOT confirm the correct flash architecture.\\n\\n"
+            "The project's separate architecture choices are ID7, ID8-BDC3 and ID8-BCP. "
+            "This diagnostic tool cannot reliably distinguish them using the current SVK data. "
+            "Verify architecture independently before considering any programming.\\n\\n"
+            "This app performs read-only diagnostics only; no flash or SSH activation."
+        )
 
     def external_backup(self):
         """Record user-confirmed external backup without asserting restore validity."""
@@ -309,8 +331,8 @@ class App(tk.Tk):
         try:
             while True:
                 output, status = self.q.get_nowait()
-                if output in ('__GATEWAY__', '__MGU__', '__SOFTWARE__', '__VARIANT__', '__SSH__', '__COMPAT__', '__BACKUP__'):
-                    {'__GATEWAY__': self.gateway, '__MGU__': self.mgu_ip, '__SOFTWARE__': self.software, '__VARIANT__': self.variant, '__SSH__': self.ssh_status, '__COMPAT__': self.compatibility, '__BACKUP__': self.backup_state}[output].set(status)
+                if output in ('__GATEWAY__', '__MGU__', '__SOFTWARE__', '__VARIANT__', '__SSH__', '__COMPAT__', '__BACKUP__', '__HWEL__', '__CAFD__'):
+                    {'__GATEWAY__': self.gateway, '__MGU__': self.mgu_ip, '__SOFTWARE__': self.software, '__VARIANT__': self.variant, '__SSH__': self.ssh_status, '__COMPAT__': self.compatibility, '__BACKUP__': self.backup_state, '__HWEL__': self.hardware, '__CAFD__': self.cafd}[output].set(status)
                     if output == '__MGU__':
                         self.host.set(status)
                     continue
