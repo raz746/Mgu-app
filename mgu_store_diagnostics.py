@@ -86,6 +86,11 @@ class App(tk.Tk):
         ttk.Entry(upstream_row, textvariable=self.upstream_status_script).pack(side="left", fill="x", expand=True)
         ttk.Button(upstream_row, text="Browse", command=lambda: self.pick(self.upstream_status_script)).pack(side="left", padx=5)
         ttk.Button(upstream_row, text="Run upstream status only", command=self.upstream_status).pack(side="left")
+        workflow_row = ttk.Frame(frame)
+        workflow_row.pack(fill="x", pady=(0, 5))
+        ttk.Button(workflow_row, text="SSH Workflow & Recovery Checklist",
+                   command=self.show_recovery_checklist).pack(side="left")
+        ttk.Label(workflow_row, text="Review prerequisites; no firmware or coding changes").pack(side="left", padx=8)
         self.state = tk.StringVar(value="Ready — no changes will be made")
         dashboard = ttk.LabelFrame(frame, text="MGU Connection Dashboard", padding=8)
         dashboard.pack(fill="x", pady=6)
@@ -552,6 +557,54 @@ class App(tk.Tk):
             except (OSError, subprocess.TimeoutExpired) as exc:
                 self.q.put((str(exc), "Upstream status failed"))
         Thread(target=worker, daemon=True).start()
+
+    def show_recovery_checklist(self):
+        """Read-only review; preserve manual architecture and backup preferences."""
+        window = tk.Toplevel(self)
+        window.title("SSH Workflow & Recovery Checklist — Read Only")
+        window.geometry("750x540")
+        window.transient(self)
+        panel = ttk.Frame(window, padding=14)
+        panel.pack(fill="both", expand=True)
+        ttk.Label(panel, text="Preparation and recovery checklist",
+                  font=("Segoe UI", 14, "bold")).pack(anchor="w")
+        ttk.Label(panel, text="Review only — this window cannot enable SSH, flash firmware, or install apps.",
+                  wraplength=700).pack(anchor="w", pady=(2, 10))
+        facts = [
+            ("Architecture selection", self.arch_choice.get() + " (manual; not independently verified)"),
+            ("Bootloader", self.software.get()),
+            ("Upstream SSH state", self.upstream_ssh_state.get()),
+            ("Debug DTC B7F8E5", self.debug_dtc.get()),
+            ("SSH endpoint", self.ssh_status.get()),
+            ("Coding backup", self.backup_state.get()),
+            ("Private key path", "Selected (key contents not stored)" if self.key.get().strip()
+             else "Not selected; not needed for current status checks"),
+        ]
+        for label, value in facts:
+            line = ttk.Frame(panel)
+            line.pack(fill="x", pady=2)
+            ttk.Label(line, text=label + ":", width=23).pack(side="left")
+            ttk.Label(line, text=value, wraplength=495).pack(side="left")
+        ttk.Separator(panel).pack(fill="x", pady=12)
+        ttk.Label(panel, text="Before any firmware-modification decision:",
+                  font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        items = [
+            "Confirm the exact hardware/software against upstream support documentation.",
+            "Verify that coding backup files are accessible and can be restored.",
+            "Plan for recovery beyond BimmerCode coding (firmware, coding and Digital Keys).",
+            "Review risks and recovery options with a qualified BMW specialist.",
+            "Only use an SSH key from an authorized setup; never share the private key.",
+        ]
+        for item in items:
+            ttk.Label(panel, text="• " + item, wraplength=695).pack(anchor="w", pady=3)
+        ttk.Label(panel, text="A user-selected architecture and a catalog BTLD match are not proof of flash compatibility.",
+                  wraplength=690).pack(anchor="w", pady=(10, 4))
+        bar = ttk.Frame(panel)
+        bar.pack(fill="x", pady=8)
+        ttk.Button(bar, text="Upstream SSH project documentation",
+                   command=lambda: webbrowser.open(
+                       "https://github.com/cauliflowermossgrape/idrive7-8-ssh-root")).pack(side="left")
+        ttk.Button(bar, text="Close", command=window.destroy).pack(side="right")
 
     def ssh_readiness(self):
         """Inspect SSH prerequisites without attempting authentication or writes."""
