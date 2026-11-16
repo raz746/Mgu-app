@@ -486,7 +486,7 @@ class App(tk.Tk):
             lines.append("Root SSH activation: not performed")
             lines.append("MGU Store installation: unavailable until authorized SSH and compatibility are verified")
             lines.append("BimmerCode coding backup does not establish full firmware recovery.")
-            return "\\n".join(lines)
+            return "\n".join(lines)
         self.run_task(task)
 
     def test_ssh(self):
