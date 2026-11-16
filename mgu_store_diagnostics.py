@@ -31,6 +31,7 @@ class App(tk.Tk):
         self.ssh_status = tk.StringVar(value='Not checked')
         self.compatibility = tk.StringVar(value='Pending identification')
         self.backup_state = tk.StringVar(value='Not selected')
+        self.backup_kind = tk.StringVar(value='BimmerCode (Android)')
         frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="MGU Store — Read-only Diagnostics", font=("Segoe UI", 17, "bold")).pack(anchor="w")
@@ -49,6 +50,7 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Check SSH Port", command=self.test_ssh).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Read MGU Store Status", command=self.status).pack(side="left")
         ttk.Button(buttons, text="Verify Backup File", command=self.verify_backup).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="External Backup", command=self.external_backup).pack(side="left", padx=(8, 0))
         self.state = tk.StringVar(value="Ready — no changes will be made")
         dashboard = ttk.LabelFrame(frame, text="MGU Connection Dashboard", padding=8)
         dashboard.pack(fill="x", pady=6)
@@ -208,6 +210,34 @@ class App(tk.Tk):
         if any("_030." in value for value in bootloaders):
             return "030 family detected — support unverified"
         return "BTLD detected — compatibility unverified"
+
+    def external_backup(self):
+        """Record user-confirmed external backup without asserting restore validity."""
+        dialog = tk.Toplevel(self)
+        dialog.title("External MGU Coding Backup")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        panel = ttk.Frame(dialog, padding=16)
+        panel.pack(fill="both", expand=True)
+        ttk.Label(panel, text="Backup stored on another device").pack(anchor="w")
+        ttk.Label(panel, text="Backup source:").pack(anchor="w", pady=(12, 2))
+        ttk.Combobox(panel, textvariable=self.backup_kind, state="readonly",
+                     values=("BimmerCode (Android)", "BimmerCode (iOS)",
+                             "E-Sys (external device)", "Other external backup")).pack(fill="x")
+        ttk.Label(panel, text="This records your confirmation only; it does not inspect or verify the backup.",
+                  wraplength=370).pack(anchor="w", pady=12)
+        def confirm():
+            source = self.backup_kind.get()
+            self.backup_state.set(source + " — user-confirmed; restore unverified")
+            self.output.configure(state="normal")
+            self.output.insert("end", "External MGU coding backup recorded: " + source +
+                               "\nNo file was accessed. Restore compatibility, full coding recovery "
+                               "and Digital Key pairings are NOT verified.\n\n")
+            self.output.configure(state="disabled")
+            self.output.see("end")
+            dialog.destroy()
+        ttk.Button(panel, text="Confirm external backup", command=confirm).pack(anchor="e")
 
     def verify_backup(self):
         path = filedialog.askopenfilename(title="Select an existing MGU coding backup")
