@@ -6,6 +6,8 @@ import ipaddress
 import select
 import time
 import shutil
+import re
+import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -16,15 +18,20 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("MGU Store Diagnostics — ENET")
-        self.geometry("780x510")
+        self.geometry("1000x700")
         self.q = Queue()
         self.host = tk.StringVar(value="")
         self.key = tk.StringVar()
         self.script = tk.StringVar()
+        self.status_tool = tk.StringVar()
+        self.gateway = tk.StringVar(value='Not detected')
+        self.mgu_ip = tk.StringVar(value='Not detected')
+        self.variant = tk.StringVar(value='Unknown')
+        self.software = tk.StringVar(value='Not read')
         frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="MGU Store — Read-only Diagnostics", font=("Segoe UI", 17, "bold")).pack(anchor="w")
-        for name, variable in [("Head-unit SSH host", self.host), ("Private SSH key", self.key), ("Official mgu-install.js", self.script)]:
+        for name, variable in [("Head-unit SSH host", self.host), ("Private SSH key", self.key), ("Official mgu-install.js", self.script), ("Official ssh_enable.py", self.status_tool)]:
             row = ttk.Frame(frame)
             row.pack(fill="x", pady=5)
             ttk.Label(row, text=name, width=23).pack(side="left")
@@ -35,9 +42,17 @@ class App(tk.Tk):
         buttons.pack(fill="x", pady=10)
         ttk.Button(buttons, text="Detect ENET", command=self.detect_enet).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Discover BMW Gateway", command=self.discover_gateway).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Read MGU Identity", command=self.identify_mgu).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Check SSH Port", command=self.test_ssh).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Read MGU Store Status", command=self.status).pack(side="left")
         self.state = tk.StringVar(value="Ready — no changes will be made")
+        dashboard = ttk.LabelFrame(frame, text="MGU Connection Dashboard", padding=8)
+        dashboard.pack(fill="x", pady=6)
+        for label, value in [("Gateway", self.gateway), ("MGU IP", self.mgu_ip), ("Variant", self.variant), ("BTLD", self.software)]:
+            line = ttk.Frame(dashboard)
+            line.pack(fill="x")
+            ttk.Label(line, text=label + ":", width=12).pack(side="left")
+            ttk.Label(line, textvariable=value).pack(side="left")
         ttk.Label(frame, textvariable=self.state).pack(anchor="w")
         self.output = tk.Text(frame, height=17, state="disabled", wrap="word")
         self.output.pack(fill="both", expand=True, pady=8)
@@ -130,6 +145,7 @@ class App(tk.Tk):
                             packet, addr = sock.recvfrom(4096)
                             if b"BMWVIN" in packet and addr[0] not in found:
                                 found.append(addr[0])
+                                self.q.put(("__GATEWAY__", addr[0]))
                                 lines.append(f"BMW gateway response: {addr[0]} (BMWVIN marker verified)")
                 except OSError as exc:
                     lines.append(f"Interface probe failed: {exc}")
@@ -138,6 +154,36 @@ class App(tk.Tk):
             else:
                 lines.append("Gateway identified. This is not the MGU IP. Head-unit identification requires a separate read-only diagnostic step.")
             return "\n".join(lines)
+        self.run_task(task)
+
+    def identify_mgu(self):
+        """Only invoke upstream status; never invoke flash, enable or coding writes."""
+        tool = Path(self.status_tool.get().strip()).expanduser()
+        if not tool.is_file() or tool.name.lower() != "ssh_enable.py":
+            messagebox.showerror("MGU identity", "Select the official ssh_enable.py script from the idrive7-8-ssh-root project.")
+            return
+        def task():
+            result = subprocess.run([sys.executable, str(tool), "status"],
+                                    cwd=str(tool.parent), capture_output=True,
+                                    text=True, timeout=60, stdin=subprocess.DEVNULL, shell=False)
+            output = (result.stdout + "\n" + result.stderr).strip()
+            gateway = re.search(r"Connecting to ENET gateway\s+(\d+\.\d+\.\d+\.\d+)", output)
+            mgu = re.search(r"MGU IP:\s*(\d+\.\d+\.\d+\.\d+)", output)
+            btld = re.search(r"BTLD\s+([0-9A-Fa-f_.]+)", output)
+            if gateway:
+                self.q.put(("__GATEWAY__", gateway.group(1)))
+            if mgu:
+                self.q.put(("__MGU__", mgu.group(1)))
+            if btld:
+                version = btld.group(1)
+                self.q.put(("__SOFTWARE__", version))
+                family = "ID7 family (verify)" if "_030." in version else ("ID8 family (BDC3/BCP unresolved)" if "_036." in version else "Unknown")
+                self.q.put(("__VARIANT__", family))
+            if result.returncode:
+                output += "\nStatus command exited with code " + str(result.returncode)
+            if not btld:
+                output += "\nNo BTLD parsed; variant not identified."
+            return output
         self.run_task(task)
 
     def run_task(self, task):
@@ -184,6 +230,11 @@ class App(tk.Tk):
         try:
             while True:
                 output, status = self.q.get_nowait()
+                if output in ('__GATEWAY__', '__MGU__', '__SOFTWARE__', '__VARIANT__'):
+                    {'__GATEWAY__': self.gateway, '__MGU__': self.mgu_ip, '__SOFTWARE__': self.software, '__VARIANT__': self.variant}[output].set(status)
+                    if output == '__MGU__':
+                        self.host.set(status)
+                    continue
                 self.output.configure(state="normal")
                 self.output.insert("end", output + "\n\n")
                 self.output.configure(state="disabled")
