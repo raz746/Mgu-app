@@ -27,6 +27,7 @@ class App(tk.Tk):
         self.mgu_ip = tk.StringVar(value='Not detected')
         self.variant = tk.StringVar(value='Unknown')
         self.software = tk.StringVar(value='Not read')
+        self.ssh_status = tk.StringVar(value='Not checked')
         frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="MGU Store — Read-only Diagnostics", font=("Segoe UI", 17, "bold")).pack(anchor="w")
@@ -47,7 +48,7 @@ class App(tk.Tk):
         self.state = tk.StringVar(value="Ready — no changes will be made")
         dashboard = ttk.LabelFrame(frame, text="MGU Connection Dashboard", padding=8)
         dashboard.pack(fill="x", pady=6)
-        for label, value in [("Gateway", self.gateway), ("MGU IP", self.mgu_ip), ("Variant", self.variant), ("BTLD", self.software)]:
+        for label, value in [("Gateway", self.gateway), ("MGU IP", self.mgu_ip), ("Variant", self.variant), ("BTLD", self.software), ("SSH", self.ssh_status)]:
             line = ttk.Frame(dashboard)
             line.pack(fill="x")
             ttk.Label(line, text=label + ":", width=12).pack(side="left")
@@ -171,13 +172,23 @@ class App(tk.Tk):
             ip = result["ip"]
             if ip:
                 self.q.put(("__MGU__", ip))
-            self.q.put(("__VARIANT__", "MGU (ID7/ID8 variant not yet verified)"))
+            self.q.put(("__VARIANT__", "MGU family unverified (ID7/ID8)"))
             rows = [f"MGU responded through gateway {gateway}:6801",
                     "BTLD: " + btld,
                     "MGU IP: " + (ip or "Not returned"),
                     "Variant: unverified; BTLD alone is insufficient to identify BDC3 vs BCP.",
                     "SVK records:"]
             rows.extend(f"  {kind}: {value}" for kind,value in result["records"])
+            if result["parse_error"]:
+                rows.append("SVK decode warning: " + result["parse_error"])
+                rows.append("Raw SVK (hex): " + result["svk_raw"])
+            if ip:
+                from mgu_readonly import check_ssh
+                ssh = check_ssh(ip)
+                self.q.put(("__SSH__", ssh))
+                rows.append("SSH: " + ssh)
+            else:
+                self.q.put(("__SSH__", "MGU IP unavailable"))
             return "\n".join(rows)
         self.run_task(task)
 
@@ -200,8 +211,10 @@ class App(tk.Tk):
                     return "Enter a discovered head-unit IP before testing SSH; laptop IP is not the MGU IP."
                 try:
                     with socket.create_connection((host, 22), timeout=3):
+                        self.q.put(("__SSH__", "TCP port 22 open (SSH/root not verified)"))
                         return f"{host}:22 is reachable. This does not establish SSH/root access."
                 except OSError:
+                    self.q.put(("__SSH__", "TCP port 22 closed or unreachable"))
                     return f"{host}:22 is closed or unreachable. This is expected if SSH is not enabled."
             self.run_task(probe)
         except ValueError as exc:
@@ -225,8 +238,8 @@ class App(tk.Tk):
         try:
             while True:
                 output, status = self.q.get_nowait()
-                if output in ('__GATEWAY__', '__MGU__', '__SOFTWARE__', '__VARIANT__'):
-                    {'__GATEWAY__': self.gateway, '__MGU__': self.mgu_ip, '__SOFTWARE__': self.software, '__VARIANT__': self.variant}[output].set(status)
+                if output in ('__GATEWAY__', '__MGU__', '__SOFTWARE__', '__VARIANT__', '__SSH__'):
+                    {'__GATEWAY__': self.gateway, '__MGU__': self.mgu_ip, '__SOFTWARE__': self.software, '__VARIANT__': self.variant, '__SSH__': self.ssh_status}[output].set(status)
                     if output == '__MGU__':
                         self.host.set(status)
                     continue
