@@ -41,6 +41,9 @@ class App(tk.Tk):
         self.arch_choice = tk.StringVar(value="ID8-BDC3")
         self.load_backup_preference()
         self.load_arch_preference()
+        self.load_ssh_preferences()
+        self.debug_dtc = tk.StringVar(value="Not checked")
+        self.upstream_ssh_state = tk.StringVar(value="Not checked")
         frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="MGU Store — Read-only Diagnostics", font=("Segoe UI", 17, "bold")).pack(anchor="w")
@@ -51,6 +54,10 @@ class App(tk.Tk):
             ttk.Entry(row, textvariable=variable).pack(side="left", fill="x", expand=True)
             if variable is not self.host:
                 ttk.Button(row, text="Browse", command=lambda v=variable: self.pick(v)).pack(side="left", padx=5)
+        key_row = ttk.Frame(frame)
+        key_row.pack(fill="x", pady=(0, 4))
+        ttk.Button(key_row, text="Save SSH key location", command=self.save_ssh_key_location).pack(side="left")
+        ttk.Label(key_row, text="Saves path only; never copies the key").pack(side="left", padx=8)
         arch_row = ttk.Frame(frame)
         arch_row.pack(fill="x", pady=(6, 2))
         ttk.Label(arch_row, text="Manually selected architecture:", width=27).pack(side="left")
@@ -82,7 +89,7 @@ class App(tk.Tk):
         self.state = tk.StringVar(value="Ready — no changes will be made")
         dashboard = ttk.LabelFrame(frame, text="MGU Connection Dashboard", padding=8)
         dashboard.pack(fill="x", pady=6)
-        for label, value in [("Gateway", self.gateway), ("MGU IP", self.mgu_ip), ("Variant", self.arch_choice), ("BTLD", self.software), ("HWEL", self.hardware), ("CAFD", self.cafd), ("SSH", self.ssh_status), ("Compatibility", self.compatibility), ("Backup", self.backup_state)]:
+        for label, value in [("Gateway", self.gateway), ("MGU IP", self.mgu_ip), ("Variant", self.arch_choice), ("BTLD", self.software), ("HWEL", self.hardware), ("CAFD", self.cafd), ("SSH", self.ssh_status), ("Debug DTC B7F8E5", self.debug_dtc), ("Upstream SSH state", self.upstream_ssh_state), ("Compatibility", self.compatibility), ("Backup", self.backup_state)]:
             line = ttk.Frame(dashboard)
             line.pack(fill="x")
             ttk.Label(line, text=label + ":", width=12).pack(side="left")
@@ -195,6 +202,41 @@ class App(tk.Tk):
         temporary.write_text(json.dumps(data, indent=2),
                              encoding="utf-8")
         temporary.replace(path)
+
+    def load_ssh_preferences(self):
+        try:
+            data = json.loads(self.backup_settings_path().read_text(encoding="utf-8"))
+            path = data.get("ssh_private_key_path", "")
+            if isinstance(path, str) and len(path) < 4096:
+                self.key.set(path)
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+    def save_ssh_key_location(self):
+        value = self.key.get().strip()
+        if value and not Path(value).expanduser().is_file():
+            messagebox.showerror("SSH key", "Selected key file does not exist.")
+            return
+        settings = self.backup_settings_path()
+        try:
+            try:
+                data = json.loads(settings.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            except (OSError, ValueError, TypeError):
+                data = {}
+            if value:
+                data["ssh_private_key_path"] = str(Path(value).expanduser().resolve())
+            else:
+                data.pop("ssh_private_key_path", None)
+            settings.parent.mkdir(parents=True, exist_ok=True)
+            temp = settings.with_suffix(".tmp")
+            temp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            temp.replace(settings)
+        except OSError as exc:
+            messagebox.showerror("SSH key", "Unable to save key location: " + str(exc))
+            return
+        messagebox.showinfo("SSH key", "Key location saved." if value else "Saved key location cleared.")
 
     def load_arch_preference(self):
         """Load a user selection, never silently infer architecture from BTLD."""
@@ -499,6 +541,12 @@ class App(tk.Tk):
                                    capture_output=True, text=True, timeout=90, shell=False)
                 output = ("Upstream SSH status (read-only action)\\n" +
                           (p.stdout + "\\n" + p.stderr).strip())
+                if p.returncode == 0:
+                    dtc = re.search(r"DTC B7F8E5[^\\r\\n]*:\\s*(PRESENT|absent)", output, re.I)
+                    state = re.search(r"Status: debug/SSH-open state is\\s*(ON|OFF[^\\r\\n]*)", output, re.I)
+                    self.q.put(("__UPSTREAM_STATE__", (
+                        dtc.group(1) if dtc else "Not reported",
+                        state.group(1).strip() if state else "Not reported")))
                 self.q.put((output, "Upstream status completed" if p.returncode == 0
                             else f"Upstream status failed (exit {p.returncode})"))
             except (OSError, subprocess.TimeoutExpired) as exc:
@@ -576,6 +624,10 @@ class App(tk.Tk):
         try:
             while True:
                 output, status = self.q.get_nowait()
+                if output == "__UPSTREAM_STATE__":
+                    self.debug_dtc.set(status[0])
+                    self.upstream_ssh_state.set(status[1])
+                    continue
                 if output in ('__GATEWAY__', '__MGU__', '__SOFTWARE__', '__VARIANT__', '__SSH__', '__COMPAT__', '__BACKUP__', '__HWEL__', '__CAFD__'):
                     {'__GATEWAY__': self.gateway, '__MGU__': self.mgu_ip, '__SOFTWARE__': self.software, '__VARIANT__': self.variant, '__SSH__': self.ssh_status, '__COMPAT__': self.compatibility, '__BACKUP__': self.backup_state, '__HWEL__': self.hardware, '__CAFD__': self.cafd}[output].set(status)
                     if output == '__MGU__':
