@@ -1,5 +1,7 @@
 """Read-only MGU Store diagnostics for authorized head units."""
 import subprocess
+import socket
+import json
 import shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -10,7 +12,7 @@ from queue import Queue, Empty
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("MGU Store Diagnostics — Phase 1")
+        self.title("MGU Store Diagnostics — ENET")
         self.geometry("780x510")
         self.q = Queue()
         self.host = tk.StringVar(value="172.16.222.97")
@@ -28,7 +30,8 @@ class App(tk.Tk):
                 ttk.Button(row, text="Browse", command=lambda v=variable: self.pick(v)).pack(side="left", padx=5)
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=10)
-        ttk.Button(buttons, text="Test SSH", command=self.test_ssh).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Detect ENET", command=self.detect_enet).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Check SSH Port", command=self.test_ssh).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Read MGU Store Status", command=self.status).pack(side="left")
         self.state = tk.StringVar(value="Ready — no changes will be made")
         ttk.Label(frame, textvariable=self.state).pack(anchor="w")
@@ -45,10 +48,8 @@ class App(tk.Tk):
         host = self.host.get().strip()
         if not host or host.startswith("-") or any(c.isspace() for c in host):
             raise ValueError("Enter a valid SSH hostname or IP address.")
-        key = Path(self.key.get()).expanduser()
-        if not key.is_file():
-            raise ValueError("Select your existing SSH private key.")
-        return host, str(key)
+        key = self.key.get().strip()
+        return host, key
 
     def run(self, cmd):
         self.state.set("Running read-only check…")
@@ -62,20 +63,50 @@ class App(tk.Tk):
                 self.q.put((str(exc), "Failed"))
         Thread(target=worker, daemon=True).start()
 
+    def detect_enet(self):
+        def worker():
+            cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                   "Get-NetIPConfiguration | Where-Object {$_.IPv4Address} | "
+                   "Select-Object InterfaceAlias,InterfaceDescription,"
+                   "@{Name='IPv4';Expression={($_.IPv4Address.IPAddress -join ', ')}} | "
+                   "ConvertTo-Json -Depth 3"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            if result.returncode:
+                return result.stderr.strip() or "Unable to list adapters"
+            data = json.loads(result.stdout or "[]")
+            entries = data if isinstance(data, list) else [data]
+            lines = ["Detected Windows adapters (ENET identification is provisional):"]
+            for item in entries:
+                ip = item.get("IPv4", "")
+                label = " — possible ENET link-local adapter" if "169.254." in ip else ""
+                lines.append(f"{item.get('InterfaceAlias')}: {ip} {item.get('InterfaceDescription')}{label}")
+            return "\\n".join(lines)
+        self.run_task(worker)
+
+    def run_task(self, task):
+        self.state.set("Checking network…")
+        def worker():
+            try:
+                self.q.put((task(), "Check complete"))
+            except Exception as exc:
+                self.q.put((str(exc), "Check failed"))
+        Thread(target=worker, daemon=True).start()
+
     def test_ssh(self):
         try:
-            host, key = self.inputs()
-            if not shutil.which("ssh"):
-                raise ValueError("Windows OpenSSH client not found.")
-            self.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
-                      "-o", "StrictHostKeyChecking=yes", "-i", key,
-                      f"root@{host}", "printf MGU_SSH_OK"])
+            host, _ = self.inputs()
+            def probe():
+                with socket.create_connection((host, 22), timeout=3):
+                    return f"{host}:22 is reachable. This does not establish SSH/root access."
+            self.run_task(probe)
         except ValueError as exc:
             messagebox.showerror("Connection", str(exc))
 
     def status(self):
         try:
             host, key = self.inputs()
+            if not key or not Path(key).expanduser().is_file():
+                raise ValueError("MGU Store status requires authorized SSH access and an existing private key.")
             script = Path(self.script.get()).expanduser()
             if not script.is_file():
                 raise ValueError("Select the official mgu-install.js file.")
