@@ -3,6 +3,8 @@ import subprocess
 import socket
 import json
 import ipaddress
+import select
+import time
 import shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -32,6 +34,7 @@ class App(tk.Tk):
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=10)
         ttk.Button(buttons, text="Detect ENET", command=self.detect_enet).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Discover BMW Gateway", command=self.discover_gateway).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Check SSH Port", command=self.test_ssh).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Read MGU Store Status", command=self.status).pack(side="left")
         self.state = tk.StringVar(value="Ready — no changes will be made")
@@ -86,6 +89,56 @@ class App(tk.Tk):
             lines.append("Adapter detection alone does not confirm a BMW connection or head-unit IP.")
             return "\n".join(lines)
         self.run_task(worker)
+
+    def discover_gateway(self):
+        """Read-only BMW ENET UDP discovery. Never transmits coding commands."""
+        def task():
+            cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                   "Get-NetIPConfiguration | Where-Object {$_.IPv4Address} | "
+                   "Select-Object InterfaceAlias,InterfaceDescription,"
+                   "@{Name='IPv4';Expression={($_.IPv4Address.IPAddress -join ', ')}} | ConvertTo-Json -Depth 3"]
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            if p.returncode:
+                raise RuntimeError(p.stderr.strip() or "Could not enumerate network interfaces")
+            raw = json.loads(p.stdout or "[]")
+            adapters = raw if isinstance(raw, list) else [raw]
+            candidates = []
+            for entry in adapters:
+                desc = (str(entry.get("InterfaceDescription") or "") + " " + str(entry.get("InterfaceAlias") or "")).lower()
+                if any(term in desc for term in ("vpn", "virtual", "bluetooth", "wi-fi", "wireless", "tap-", "tunnel", "hyper-v")):
+                    continue
+                for ip in str(entry.get("IPv4") or "").split(","):
+                    ip = ip.strip()
+                    if ip.startswith("169.254."):
+                        candidates.append((entry.get("InterfaceAlias"), ip))
+            if not candidates:
+                return "No physical link-local Ethernet interface found. Check cable, ignition and Windows network settings."
+            lines = ["BMW ENET discovery — read-only UDP broadcast on port 6811"]
+            found = []
+            for name, source in candidates:
+                lines.append(f"Testing {name} ({source})")
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                        sock.bind((source, 0))
+                        sock.sendto(bytes([0,0,0,0,0,17]), ("169.254.255.255", 6811))
+                        deadline = time.monotonic() + 2.0
+                        while time.monotonic() < deadline:
+                            ready, _, _ = select.select([sock], [], [], max(0, deadline - time.monotonic()))
+                            if not ready:
+                                break
+                            packet, addr = sock.recvfrom(4096)
+                            if b"BMWVIN" in packet and addr[0] not in found:
+                                found.append(addr[0])
+                                lines.append(f"BMW gateway response: {addr[0]} (BMWVIN marker verified)")
+                except OSError as exc:
+                    lines.append(f"Interface probe failed: {exc}")
+            if not found:
+                lines.append("No BMW gateway reply. Check physical ENET link and firewall; this does not prove the MGU is offline.")
+            else:
+                lines.append("Gateway identified. This is not the MGU IP. Head-unit identification requires a separate read-only diagnostic step.")
+            return "\n".join(lines)
+        self.run_task(task)
 
     def run_task(self, task):
         self.state.set("Checking network…")
