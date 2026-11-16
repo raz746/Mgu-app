@@ -2,6 +2,7 @@
 import subprocess
 import socket
 import json
+import ipaddress
 import shutil
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -15,7 +16,7 @@ class App(tk.Tk):
         self.title("MGU Store Diagnostics — ENET")
         self.geometry("780x510")
         self.q = Queue()
-        self.host = tk.StringVar(value="172.16.222.97")
+        self.host = tk.StringVar(value="")
         self.key = tk.StringVar()
         self.script = tk.StringVar()
         frame = ttk.Frame(self, padding=16)
@@ -75,12 +76,15 @@ class App(tk.Tk):
                 return result.stderr.strip() or "Unable to list adapters"
             data = json.loads(result.stdout or "[]")
             entries = data if isinstance(data, list) else [data]
-            lines = ["Detected Windows adapters (ENET identification is provisional):"]
+            lines = ["Detected Windows adapters (physical Ethernet prioritized):"]
             for item in entries:
                 ip = item.get("IPv4", "")
-                label = " — possible ENET link-local adapter" if "169.254." in ip else ""
+                desc = str(item.get("InterfaceDescription") or "").lower()
+                virtual = any(word in desc for word in ("vpn", "virtual", "tap-", "tunnel", "bluetooth", "wireless", "wi-fi", "hyper-v"))
+                label = " — PHYSICAL ETHERNET CANDIDATE" if "169.254." in ip and not virtual else (" — virtual/non-ENET candidate" if "169.254." in ip else "")
                 lines.append(f"{item.get('InterfaceAlias')}: {ip} {item.get('InterfaceDescription')}{label}")
-            return "\\n".join(lines)
+            lines.append("Adapter detection alone does not confirm a BMW connection or head-unit IP.")
+            return "\n".join(lines)
         self.run_task(worker)
 
     def run_task(self, task):
@@ -96,8 +100,15 @@ class App(tk.Tk):
         try:
             host, _ = self.inputs()
             def probe():
-                with socket.create_connection((host, 22), timeout=3):
-                    return f"{host}:22 is reachable. This does not establish SSH/root access."
+                try:
+                    ipaddress.ip_address(host)
+                except ValueError:
+                    return "Enter a discovered head-unit IP before testing SSH; laptop IP is not the MGU IP."
+                try:
+                    with socket.create_connection((host, 22), timeout=3):
+                        return f"{host}:22 is reachable. This does not establish SSH/root access."
+                except OSError:
+                    return f"{host}:22 is closed or unreachable. This is expected if SSH is not enabled."
             self.run_task(probe)
         except ValueError as exc:
             messagebox.showerror("Connection", str(exc))
