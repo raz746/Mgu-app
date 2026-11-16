@@ -68,6 +68,10 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Verify Backup File", command=self.verify_backup).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="External Backup", command=self.external_backup).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="Compatibility Details", command=self.compatibility_details).pack(side="left", padx=(8, 0))
+        ssh_row = ttk.Frame(frame)
+        ssh_row.pack(fill="x", pady=(0, 5))
+        ttk.Button(ssh_row, text="SSH Readiness Report", command=self.ssh_readiness).pack(side="left")
+        ttk.Label(ssh_row, text="Read-only: checks port, client and local key availability").pack(side="left", padx=8)
         self.state = tk.StringVar(value="Ready — no changes will be made")
         dashboard = ttk.LabelFrame(frame, text="MGU Connection Dashboard", padding=8)
         dashboard.pack(fill="x", pady=6)
@@ -450,6 +454,40 @@ class App(tk.Tk):
             except Exception as exc:
                 self.q.put((str(exc), "Check failed"))
         Thread(target=worker, daemon=True).start()
+
+    def ssh_readiness(self):
+        """Inspect SSH prerequisites without attempting authentication or writes."""
+        host = self.mgu_ip.get().strip()
+        try:
+            ipaddress.IPv4Address(host)
+        except ValueError:
+            messagebox.showinfo("SSH readiness", "Read MGU Identity first to obtain the head-unit IP.")
+            return
+        key_name = self.key.get().strip()
+        def task():
+            lines = ["MGU SSH readiness — no changes made", "MGU IP: " + host]
+            lines.append("Architecture: " + self.arch_choice.get() + " (manual; unverified)")
+            client = shutil.which("ssh")
+            lines.append("Windows SSH client: " + ("available" if client else "not found"))
+            if key_name:
+                key_path = Path(key_name).expanduser()
+                lines.append("Selected SSH private key: " +
+                             ("file present (authentication not verified)" if key_path.is_file()
+                              else "file not found"))
+            else:
+                lines.append("Selected SSH private key: none")
+            try:
+                with socket.create_connection((host, 22), timeout=3):
+                    port_status = "TCP port 22 open (authentication not verified)"
+            except OSError:
+                port_status = "TCP port 22 closed or unreachable"
+            self.q.put(("__SSH__", port_status))
+            lines.append("SSH endpoint: " + port_status)
+            lines.append("Root SSH activation: not performed")
+            lines.append("MGU Store installation: unavailable until authorized SSH and compatibility are verified")
+            lines.append("BimmerCode coding backup does not establish full firmware recovery.")
+            return "\\n".join(lines)
+        self.run_task(task)
 
     def test_ssh(self):
         try:
