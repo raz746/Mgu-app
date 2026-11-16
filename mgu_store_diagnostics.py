@@ -26,6 +26,7 @@ class App(tk.Tk):
         self.host = tk.StringVar(value="")
         self.key = tk.StringVar()
         self.script = tk.StringVar()
+        self.upstream_status_script = tk.StringVar()
         self.gateway = tk.StringVar(value='Not detected')
         self.mgu_ip = tk.StringVar(value='Not detected')
         self.variant = tk.StringVar(value='Unknown')
@@ -72,6 +73,12 @@ class App(tk.Tk):
         ssh_row.pack(fill="x", pady=(0, 5))
         ttk.Button(ssh_row, text="SSH Readiness Report", command=self.ssh_readiness).pack(side="left")
         ttk.Label(ssh_row, text="Read-only: checks port, client and local key availability").pack(side="left", padx=8)
+        upstream_row = ttk.Frame(frame)
+        upstream_row.pack(fill="x", pady=(0, 5))
+        ttk.Label(upstream_row, text="Upstream ssh_enable.py:", width=23).pack(side="left")
+        ttk.Entry(upstream_row, textvariable=self.upstream_status_script).pack(side="left", fill="x", expand=True)
+        ttk.Button(upstream_row, text="Browse", command=lambda: self.pick(self.upstream_status_script)).pack(side="left", padx=5)
+        ttk.Button(upstream_row, text="Run upstream status only", command=self.upstream_status).pack(side="left")
         self.state = tk.StringVar(value="Ready — no changes will be made")
         dashboard = ttk.LabelFrame(frame, text="MGU Connection Dashboard", padding=8)
         dashboard.pack(fill="x", pady=6)
@@ -453,6 +460,49 @@ class App(tk.Tk):
                 self.q.put((task(), "Check complete"))
             except Exception as exc:
                 self.q.put((str(exc), "Check failed"))
+        Thread(target=worker, daemon=True).start()
+
+    def upstream_status(self):
+        """Run only the upstream project's documented read-only status action."""
+        script = Path(self.upstream_status_script.get().strip()).expanduser()
+        if script.name != "ssh_enable.py" or not script.is_file():
+            messagebox.showerror("Upstream SSH status",
+                "Select ssh_enable.py from a locally downloaded copy of the upstream project.")
+            return
+        gateway = self.gateway.get().strip()
+        mgu_ip = self.mgu_ip.get().strip()
+        try:
+            ipaddress.IPv4Address(gateway)
+            ipaddress.IPv4Address(mgu_ip)
+        except ValueError:
+            messagebox.showerror("Upstream SSH status", "Discover the gateway and read MGU identity first.")
+            return
+        architecture = {"ID8-BDC3": "id8-bdc3", "ID8-BCP": "id8-bcp", "ID7": "id7"}.get(
+            self.arch_choice.get())
+        if not architecture:
+            messagebox.showerror("Upstream SSH status", "Choose an architecture first.")
+            return
+        if not messagebox.askokcancel("Run upstream status",
+            "This launches code from the selected local project on your PC.\\n"
+            "Only its documented 'status' action will be requested.\\n"
+            "It reads the debug DTC and checks SSH connectivity; it does not request flashing.\\n"
+            "Use only a source you trust. Continue?"):
+            return
+        self.state.set("Running upstream read-only status…")
+        def worker():
+            try:
+                cmd = [sys.executable if not getattr(sys, "frozen", False) else
+                       (shutil.which("python") or "python"),
+                       str(script.resolve()), "status", "--gateway", gateway,
+                       "--mgu-ip", mgu_ip, "--arch", architecture, "--no-log"]
+                p = subprocess.run(cmd, cwd=str(script.parent), stdin=subprocess.DEVNULL,
+                                   capture_output=True, text=True, timeout=90, shell=False)
+                output = ("Upstream SSH status (read-only action)\\n" +
+                          (p.stdout + "\\n" + p.stderr).strip())
+                self.q.put((output, "Upstream status completed" if p.returncode == 0
+                            else f"Upstream status failed (exit {p.returncode})"))
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                self.q.put((str(exc), "Upstream status failed"))
         Thread(target=worker, daemon=True).start()
 
     def ssh_readiness(self):
