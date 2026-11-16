@@ -8,6 +8,7 @@ import time
 import shutil
 import re
 import sys
+import hashlib
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -28,6 +29,8 @@ class App(tk.Tk):
         self.variant = tk.StringVar(value='Unknown')
         self.software = tk.StringVar(value='Not read')
         self.ssh_status = tk.StringVar(value='Not checked')
+        self.compatibility = tk.StringVar(value='Pending identification')
+        self.backup_state = tk.StringVar(value='Not selected')
         frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="MGU Store — Read-only Diagnostics", font=("Segoe UI", 17, "bold")).pack(anchor="w")
@@ -45,10 +48,11 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Read MGU Identity", command=self.identify_mgu).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Check SSH Port", command=self.test_ssh).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Read MGU Store Status", command=self.status).pack(side="left")
+        ttk.Button(buttons, text="Verify Backup File", command=self.verify_backup).pack(side="left", padx=(8, 0))
         self.state = tk.StringVar(value="Ready — no changes will be made")
         dashboard = ttk.LabelFrame(frame, text="MGU Connection Dashboard", padding=8)
         dashboard.pack(fill="x", pady=6)
-        for label, value in [("Gateway", self.gateway), ("MGU IP", self.mgu_ip), ("Variant", self.variant), ("BTLD", self.software), ("SSH", self.ssh_status)]:
+        for label, value in [("Gateway", self.gateway), ("MGU IP", self.mgu_ip), ("Variant", self.variant), ("BTLD", self.software), ("SSH", self.ssh_status), ("Compatibility", self.compatibility), ("Backup", self.backup_state)]:
             line = ttk.Frame(dashboard)
             line.pack(fill="x")
             ttk.Label(line, text=label + ":", width=12).pack(side="left")
@@ -173,6 +177,7 @@ class App(tk.Tk):
             if ip:
                 self.q.put(("__MGU__", ip))
             self.q.put(("__VARIANT__", "MGU family unverified (ID7/ID8)"))
+            self.q.put(("__COMPAT__", self.classify_compatibility(result["records"])))
             rows = [f"MGU responded through gateway {gateway}:6801",
                     "BTLD: " + btld,
                     "MGU IP: " + (ip or "Not returned"),
@@ -190,6 +195,42 @@ class App(tk.Tk):
             else:
                 self.q.put(("__SSH__", "MGU IP unavailable"))
             return "\n".join(rows)
+        self.run_task(task)
+
+    @staticmethod
+    def classify_compatibility(records):
+        """Informational classification, never authorization to flash."""
+        bootloaders = [value for kind, value in records if kind == "BTLD"]
+        if not bootloaders:
+            return "Unknown — no BTLD record"
+        if any("_036." in value for value in bootloaders):
+            return "036 family detected — support unverified"
+        if any("_030." in value for value in bootloaders):
+            return "030 family detected — support unverified"
+        return "BTLD detected — compatibility unverified"
+
+    def verify_backup(self):
+        path = filedialog.askopenfilename(title="Select an existing MGU coding backup")
+        if not path:
+            return
+        def task():
+            target = Path(path)
+            if not target.is_file():
+                raise ValueError("Backup file not found")
+            size = target.stat().st_size
+            if size == 0:
+                raise ValueError("Backup file is empty")
+            digest = hashlib.sha256()
+            with target.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            self.q.put(("__BACKUP__", "File present; restore unverified"))
+            return ("Backup file check (no changes made)\n"
+                    f"Name: {target.name}\nSize: {size:,} bytes\n"
+                    f"SHA-256: {digest.hexdigest()}\n"
+                    "This confirms file readability and a checksum only. "
+                    "It does NOT verify coding contents, vehicle match, "
+                    "restore compatibility, or Digital Key preservation.")
         self.run_task(task)
 
     def run_task(self, task):
@@ -238,8 +279,8 @@ class App(tk.Tk):
         try:
             while True:
                 output, status = self.q.get_nowait()
-                if output in ('__GATEWAY__', '__MGU__', '__SOFTWARE__', '__VARIANT__', '__SSH__'):
-                    {'__GATEWAY__': self.gateway, '__MGU__': self.mgu_ip, '__SOFTWARE__': self.software, '__VARIANT__': self.variant, '__SSH__': self.ssh_status}[output].set(status)
+                if output in ('__GATEWAY__', '__MGU__', '__SOFTWARE__', '__VARIANT__', '__SSH__', '__COMPAT__', '__BACKUP__'):
+                    {'__GATEWAY__': self.gateway, '__MGU__': self.mgu_ip, '__SOFTWARE__': self.software, '__VARIANT__': self.variant, '__SSH__': self.ssh_status, '__COMPAT__': self.compatibility, '__BACKUP__': self.backup_state}[output].set(status)
                     if output == '__MGU__':
                         self.host.set(status)
                     continue
