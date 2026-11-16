@@ -40,23 +40,58 @@ def _request(sock, destination, payload, wait=4):
             del received[:offset]
     raise TimeoutError("MGU did not answer the read-only identification request")
 
+SVK_TYPES = {1: "HWEL", 5: "CAFD", 6: "BTLD", 8: "SWFL", 13: "SWFK"}
+
+def parse_svk(payload):
+    """Decode SVK using the upstream strict-or-offset record-pair approach."""
+    marker = bytes.fromhex("62 F1 01")
+    index = payload.find(marker)
+    if index < 0:
+        raise ValueError("SVK response lacks the expected positive identifier")
+    body = payload[index + len(marker):]
+    def valid(offset):
+        return offset + 7 < len(body) and body[offset] in SVK_TYPES and body[offset+1:offset+3] == bytes(2)
+    if index == 0 and len(body) % 8 == 0:
+        start = 0
+    else:
+        start = next((i for i in range(max(0, len(body)-15)) if valid(i) and valid(i+8)), None)
+    if start is None:
+        raise ValueError("SVK records could not be aligned; raw response retained")
+    records = []
+    for i in range(start, len(body)-7, 8):
+        if body[i] not in SVK_TYPES:
+            continue
+        identifier = int.from_bytes(body[i+1:i+5], "big")
+        version = ".".join(f"{x:03d}" for x in body[i+5:i+8])
+        records.append((SVK_TYPES[body[i]], f"{identifier:08X}_{version}"))
+    if not records:
+        raise ValueError("No recognized SVK records")
+    return records
+
 def read_identity(gateway):
     with socket.create_connection((gateway, 6801), timeout=4) as sock:
         svk = _request(sock, 0x63, bytes.fromhex("22 F1 01"), wait=10)
-        body = svk[3:]
-        records = []
-        for i in range(0, len(body)-7, 8):
-            kind = body[i]
-            if kind in (1,5,6,8,13):
-                ident = int.from_bytes(body[i+1:i+5], "big")
-                trip = ".".join(str(x).zfill(3) for x in body[i+5:i+8])
-                records.append((kind, f"{ident:08X}_{trip}"))
-        if not records:
-            raise ValueError("SVK response received but could not decode records")
-        btld = [value for kind,value in records if kind == 6]
+        try:
+            records = parse_svk(svk)
+            parse_error = None
+        except ValueError as exc:
+            records = []
+            parse_error = str(exc)
+        btld = [value for kind, value in records if kind == "BTLD"]
         try:
             raw_ip = _request(sock, 0x63, bytes.fromhex("22 17 2A"), wait=3)
-            ip = socket.inet_ntoa(raw_ip[4:8]) if len(raw_ip) >= 16 and raw_ip[3] == 0 else None
+            marker = bytes.fromhex("62 17 2A 00")
+            index = raw_ip.find(marker)
+            ip = socket.inet_ntoa(raw_ip[index+4:index+8]) if index >= 0 and len(raw_ip) >= index+16 else None
         except (OSError, TimeoutError, ValueError):
             ip = None
-        return {"btld": btld, "ip": ip, "records": records}
+        return {"btld": btld, "ip": ip, "records": records,
+                "parse_error": parse_error, "svk_raw": svk.hex(" ").upper()}
+
+def check_ssh(host, timeout=3):
+    """TCP reachability only: not proof of authentication or root access."""
+    try:
+        with socket.create_connection((host, 22), timeout=timeout):
+            return "TCP port 22 open (SSH/root not verified)"
+    except OSError:
+        return "TCP port 22 closed or unreachable"
