@@ -36,7 +36,9 @@ class App(tk.Tk):
         self.compatibility = tk.StringVar(value='Pending identification')
         self.backup_state = tk.StringVar(value='Not selected')
         self.backup_kind = tk.StringVar(value='BimmerCode (Android)')
+        self.arch_choice = tk.StringVar(value="Unknown / not selected")
         self.load_backup_preference()
+        self.load_arch_preference()
         frame = ttk.Frame(self, padding=16)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="MGU Store — Read-only Diagnostics", font=("Segoe UI", 17, "bold")).pack(anchor="w")
@@ -47,6 +49,14 @@ class App(tk.Tk):
             ttk.Entry(row, textvariable=variable).pack(side="left", fill="x", expand=True)
             if variable is not self.host:
                 ttk.Button(row, text="Browse", command=lambda v=variable: self.pick(v)).pack(side="left", padx=5)
+        arch_row = ttk.Frame(frame)
+        arch_row.pack(fill="x", pady=(6, 2))
+        ttk.Label(arch_row, text="Manually selected architecture:", width=27).pack(side="left")
+        ttk.Combobox(arch_row, textvariable=self.arch_choice, state="readonly",
+                     width=25, values=("Unknown / not selected", "ID8-BDC3",
+                                       "ID8-BCP", "ID7")).pack(side="left")
+        ttk.Button(arch_row, text="Save selection", command=self.save_arch_selection).pack(side="left", padx=8)
+        ttk.Label(arch_row, text="User-selected; not verified by diagnostics").pack(side="left")
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=10)
         ttk.Button(buttons, text="Detect ENET", command=self.detect_enet).pack(side="left", padx=(0, 8))
@@ -60,7 +70,7 @@ class App(tk.Tk):
         self.state = tk.StringVar(value="Ready — no changes will be made")
         dashboard = ttk.LabelFrame(frame, text="MGU Connection Dashboard", padding=8)
         dashboard.pack(fill="x", pady=6)
-        for label, value in [("Gateway", self.gateway), ("MGU IP", self.mgu_ip), ("Variant", self.variant), ("BTLD", self.software), ("HWEL", self.hardware), ("CAFD", self.cafd), ("SSH", self.ssh_status), ("Compatibility", self.compatibility), ("Backup", self.backup_state)]:
+        for label, value in [("Gateway", self.gateway), ("MGU IP", self.mgu_ip), ("Variant", self.arch_choice), ("BTLD", self.software), ("HWEL", self.hardware), ("CAFD", self.cafd), ("SSH", self.ssh_status), ("Compatibility", self.compatibility), ("Backup", self.backup_state)]:
             line = ttk.Frame(dashboard)
             line.pack(fill="x")
             ttk.Label(line, text=label + ":", width=12).pack(side="left")
@@ -95,9 +105,50 @@ class App(tk.Tk):
         path = self.backup_settings_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({"external_backup_source": source}, indent=2),
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError, TypeError):
+            data = {}
+        data["external_backup_source"] = source
+        temporary.write_text(json.dumps(data, indent=2),
                              encoding="utf-8")
         temporary.replace(path)
+
+    def load_arch_preference(self):
+        """Load a user selection, never silently infer architecture from BTLD."""
+        try:
+            data = json.loads(self.backup_settings_path().read_text(encoding="utf-8"))
+            value = data.get("manual_architecture", "Unknown / not selected")
+            if value in ("Unknown / not selected", "ID8-BDC3", "ID8-BCP", "ID7"):
+                self.arch_choice.set(value)
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def save_arch_selection(self):
+        """Persist manual selection alongside external backup preference."""
+        value = self.arch_choice.get()
+        if value not in ("Unknown / not selected", "ID8-BDC3", "ID8-BCP", "ID7"):
+            messagebox.showerror("Architecture", "Invalid architecture selection.")
+            return
+        path = self.backup_settings_path()
+        try:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            except (OSError, ValueError, TypeError):
+                data = {}
+            data["manual_architecture"] = value
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as exc:
+            messagebox.showerror("Architecture", "Unable to save selection: " + str(exc))
+            return
+        messagebox.showinfo("Architecture", value + " saved as a manual selection.\\nThis does not verify flash compatibility.")
 
     def pick(self, var):
         path = filedialog.askopenfilename()
@@ -254,8 +305,9 @@ class App(tk.Tk):
         cafd = self.cafd.get()
         messagebox.showinfo(
             "MGU Compatibility — Read Only",
-            "Observed MGU identity:\\n"
-            f"BTLD: {btld}\\nHWEL: {hwel}\\nCAFD: {cafd}\\n\\n"
+            f"Manual architecture: {self.arch_choice.get()} (not independently verified)\\n\\n"
+            "Observed MGU identity:\n"
+            f"BTLD: {btld}\nHWEL: {hwel}\nCAFD: {cafd}\n\n"
             "Upstream SSH project checks the 00003F36 BTLD catalog identifier. "
             "A matching identifier does NOT confirm the correct flash architecture.\\n\\n"
             "The project's separate architecture choices are ID7, ID8-BDC3 and ID8-BCP. "
