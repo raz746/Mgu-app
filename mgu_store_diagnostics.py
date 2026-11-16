@@ -57,6 +57,7 @@ class App(tk.Tk):
         key_row = ttk.Frame(frame)
         key_row.pack(fill="x", pady=(0, 4))
         ttk.Button(key_row, text="Save SSH key location", command=self.save_ssh_key_location).pack(side="left")
+        ttk.Button(key_row, text="Create local SSH key", command=self.create_local_ssh_key).pack(side="left", padx=6)
         ttk.Button(key_row, text="Inspect SSH key", command=self.inspect_ssh_key).pack(side="left", padx=6)
         ttk.Button(key_row, text="Test authorized SSH", command=self.test_authorized_ssh).pack(side="left")
         ttk.Label(key_row, text="Local checks; never copies the key").pack(side="left", padx=8)
@@ -209,6 +210,52 @@ class App(tk.Tk):
         temporary.write_text(json.dumps(data, indent=2),
                              encoding="utf-8")
         temporary.replace(path)
+
+    def create_local_ssh_key(self):
+        """Generate a local-only Ed25519 key pair; never transmit keys or change the MGU."""
+        keygen = shutil.which("ssh-keygen")
+        if not keygen:
+            messagebox.showerror("SSH key", "Windows OpenSSH ssh-keygen is not installed.")
+            return
+        folder = Path.home() / ".ssh"
+        destination = filedialog.asksaveasfilename(
+            title="Choose a NEW local SSH private-key filename",
+            initialdir=str(folder if folder.is_dir() else Path.home()),
+            initialfile="mgu_manager_ed25519",
+            defaultextension="")
+        if not destination:
+            return
+        private = Path(destination).expanduser()
+        public = Path(str(private) + ".pub")
+        if private.exists() or public.exists():
+            messagebox.showerror("SSH key", "A key file already exists at this location. Choose a new name; existing keys will not be overwritten.")
+            return
+        if not messagebox.askyesno(
+            "Create local SSH key",
+            "Create a new Ed25519 key pair on this PC?\n\n"
+            "This version creates a key without a passphrase. Protect the private-key file and do not share it.\n\n"
+            "No key will be uploaded, and the BMW MGU will not be modified."):
+            return
+        try:
+            private.parent.mkdir(parents=True, exist_ok=True)
+            p = subprocess.run(
+                [keygen, "-q", "-t", "ed25519", "-N", "", "-f", str(private),
+                 "-C", "mgu-manager-local"],
+                capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                timeout=20, shell=False)
+            if p.returncode != 0:
+                raise RuntimeError((p.stderr or "ssh-keygen failed").strip()[:400])
+            if not private.is_file() or not public.is_file():
+                raise RuntimeError("Key generation did not produce both files.")
+            self.key.set(str(private))
+            self.save_ssh_key_location()
+            messagebox.showinfo("Local SSH key created",
+                "New local SSH key pair created.\n\n"
+                "Private key: " + str(private) + "\n"
+                "Public key: " + str(public) + "\n\n"
+                "The key is not authorized on the MGU. SSH remains unchanged.")
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            messagebox.showerror("SSH key", "Local key generation failed: " + str(exc))
 
     def inspect_ssh_key(self):
         """Show only the fingerprint of a public key; never print private-key material."""
