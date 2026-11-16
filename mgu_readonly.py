@@ -32,7 +32,7 @@ def _request(sock, destination, payload, wait=4):
             body = bytes(received[offset+8:offset+6+length])
             offset += length + 6
             if kind == 1 and src == destination and dst == 0xF4:
-                if body[:1] == b"\\x7f":
+                if body[:1] == bytes([0x7F]):
                     raise ValueError("MGU rejected read-only request: " + body.hex())
                 if body.startswith(bytes([payload[0] + 0x40]) + payload[1:3]):
                     return body
