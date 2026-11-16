@@ -36,7 +36,7 @@ class App(tk.Tk):
         self.compatibility = tk.StringVar(value='Pending identification')
         self.backup_state = tk.StringVar(value='Not selected')
         self.backup_kind = tk.StringVar(value='BimmerCode (Android)')
-        self.arch_choice = tk.StringVar(value="Unknown / not selected")
+        self.arch_choice = tk.StringVar(value="ID8-BDC3")
         self.load_backup_preference()
         self.load_arch_preference()
         frame = ttk.Frame(self, padding=16)
