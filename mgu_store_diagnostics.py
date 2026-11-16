@@ -57,7 +57,9 @@ class App(tk.Tk):
         key_row = ttk.Frame(frame)
         key_row.pack(fill="x", pady=(0, 4))
         ttk.Button(key_row, text="Save SSH key location", command=self.save_ssh_key_location).pack(side="left")
-        ttk.Label(key_row, text="Saves path only; never copies the key").pack(side="left", padx=8)
+        ttk.Button(key_row, text="Inspect SSH key", command=self.inspect_ssh_key).pack(side="left", padx=6)
+        ttk.Button(key_row, text="Test authorized SSH", command=self.test_authorized_ssh).pack(side="left")
+        ttk.Label(key_row, text="Local checks; never copies the key").pack(side="left", padx=8)
         arch_row = ttk.Frame(frame)
         arch_row.pack(fill="x", pady=(6, 2))
         ttk.Label(arch_row, text="Manually selected architecture:", width=27).pack(side="left")
@@ -207,6 +209,59 @@ class App(tk.Tk):
         temporary.write_text(json.dumps(data, indent=2),
                              encoding="utf-8")
         temporary.replace(path)
+
+    def inspect_ssh_key(self):
+        """Show only the fingerprint of a public key; never print private-key material."""
+        value = self.key.get().strip()
+        if not value:
+            messagebox.showinfo("SSH key", "Choose an existing private key first. No key is required for read-only MGU diagnostics.")
+            return
+        private = Path(value).expanduser()
+        public = Path(str(private) + ".pub")
+        if not private.is_file():
+            messagebox.showerror("SSH key", "Private key file not found.")
+            return
+        if not public.is_file():
+            messagebox.showinfo("SSH key", "Private key file exists, but no matching .pub file was found. Key pairing and authentication are unverified.")
+            return
+        ssh_keygen = shutil.which("ssh-keygen")
+        if not ssh_keygen:
+            messagebox.showerror("SSH key", "OpenSSH ssh-keygen is not available on this PC.")
+            return
+        try:
+            p = subprocess.run([ssh_keygen, "-lf", str(public)], capture_output=True,
+                               text=True, timeout=8, stdin=subprocess.DEVNULL, shell=False)
+            if p.returncode != 0:
+                raise ValueError("Unable to read public-key fingerprint.")
+            fingerprint = p.stdout.strip()
+            messagebox.showinfo("SSH public-key fingerprint",
+                fingerprint[:500] + "\n\nPrivate key contents were not accessed or copied.\n"
+                "Matching public and private keys and MGU authorization are not verified.")
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            messagebox.showerror("SSH key", str(exc))
+
+    def test_authorized_ssh(self):
+        """Non-interactive authentication probe; no remote commands are executed."""
+        host = self.host.get().strip()
+        key = Path(self.key.get().strip()).expanduser() if self.key.get().strip() else None
+        try:
+            ipaddress.IPv4Address(host)
+        except ValueError:
+            messagebox.showerror("SSH test", "Select a valid detected MGU IP.")
+            return
+        if not key or not key.is_file():
+            messagebox.showinfo("SSH test", "Select an existing private key first.")
+            return
+        if not shutil.which("ssh"):
+            messagebox.showerror("SSH test", "Windows OpenSSH client not found.")
+            return
+        try:
+            with socket.create_connection((host, 22), timeout=3):
+                pass
+        except OSError:
+            messagebox.showinfo("SSH test", "MGU port 22 is closed or unreachable. No authentication attempted.")
+            return
+        messagebox.showinfo("SSH test", "Port 22 is reachable. This tool does not attempt login without a separately verified account and authorization. No remote commands executed.")
 
     def load_ssh_preferences(self):
         try:
