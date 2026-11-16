@@ -10,6 +10,7 @@ import re
 import sys
 import hashlib
 import os
+import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -78,7 +79,75 @@ class App(tk.Tk):
         ttk.Label(frame, textvariable=self.state).pack(anchor="w")
         self.output = tk.Text(frame, height=17, state="disabled", wrap="word")
         self.output.pack(fill="both", expand=True, pady=8)
+        self.add_catalog_panel(frame)
         self.after(100, self.drain)
+
+    def add_catalog_panel(self, parent):
+        """Local catalog browsing only: never executes packages or installer."""
+        self.catalog_items = []
+        section = ttk.LabelFrame(parent, text="App Catalog — Preview Only", padding=8)
+        section.pack(fill="x", pady=(4, 6))
+        ttk.Label(section, text="Browse a local catalog.json; this does not contact or change the MGU.").pack(anchor="w")
+        bar = ttk.Frame(section)
+        bar.pack(fill="x", pady=4)
+        ttk.Button(bar, text="Open local catalog.json", command=self.open_catalog).pack(side="left")
+        ttk.Button(bar, text="View upstream MGU Store", command=lambda: webbrowser.open(
+            "https://github.com/robertnisipeanu/mgu-store")).pack(side="left", padx=8)
+        ttk.Button(bar, text="Preview selected app", command=self.preview_app).pack(side="left")
+        self.catalog_list = tk.Listbox(section, height=4, exportselection=False)
+        self.catalog_list.pack(fill="x")
+        ttk.Label(section, text="Install / update / remove disabled: root SSH and compatibility not verified.").pack(anchor="w")
+
+    def open_catalog(self):
+        path = filedialog.askopenfilename(title="Choose MGU catalog.json",
+                                          filetypes=[("JSON catalog", "*.json")])
+        if not path:
+            return
+        try:
+            if Path(path).stat().st_size > 2 * 1024 * 1024:
+                raise ValueError("Catalog is too large (2 MB limit).")
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                entries = data
+            elif isinstance(data, dict):
+                entries = next((data[k] for k in ("apps", "packages", "items")
+                                if isinstance(data.get(k), list)), None)
+                if entries is None:
+                    raise ValueError("Expected an apps, packages or items array.")
+            else:
+                raise ValueError("Expected a JSON catalog object or array.")
+            if len(entries) > 1000:
+                raise ValueError("Catalog has too many entries.")
+            self.catalog_items = [e for e in entries if isinstance(e, dict)]
+            self.catalog_list.delete(0, "end")
+            for item in self.catalog_items:
+                name = str(item.get("name") or item.get("id") or "Unnamed")[:100]
+                version = str(item.get("version") or "version unknown")[:40]
+                self.catalog_list.insert("end", name + " — " + version)
+            self.state.set(f"Loaded {len(self.catalog_items)} catalog entries locally")
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            messagebox.showerror("App catalog", str(exc))
+
+    def preview_app(self):
+        chosen = self.catalog_list.curselection()
+        if not chosen:
+            messagebox.showinfo("App preview", "Choose an app from a local catalog first.")
+            return
+        item = self.catalog_items[chosen[0]]
+        supported = item.get("mguHmi", item.get("compatibility", "Not specified"))
+        if isinstance(supported, list):
+            supported = ", ".join(str(v) for v in supported)
+        dependencies = item.get("requires", [])
+        if isinstance(dependencies, list):
+            dependencies = ", ".join(str(v) for v in dependencies) or "None declared"
+        messagebox.showinfo("App preview — no installation",
+            "App: " + str(item.get("name") or item.get("id") or "Unnamed")[:150] +
+            "\\nVersion: " + str(item.get("version") or "Unknown")[:100] +
+            "\\nDeclared platform: " + str(supported)[:250] +
+            "\\nDependencies: " + str(dependencies)[:250] +
+            "\\nSelected vehicle architecture: " + self.arch_choice.get() +
+            "\\n\\nCatalog metadata is untrusted and not a compatibility verification." +
+            "\\nNo package will be downloaded or installed.")
 
     @staticmethod
     def backup_settings_path():
