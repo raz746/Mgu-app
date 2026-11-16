@@ -91,6 +91,8 @@ class App(tk.Tk):
         ttk.Button(upstream_row, text="Run upstream status only", command=self.upstream_status).pack(side="left")
         workflow_row = ttk.Frame(frame)
         workflow_row.pack(fill="x", pady=(0, 5))
+        ttk.Button(workflow_row, text="SSH Activation Readiness",
+                   command=self.show_activation_readiness).pack(side="left", padx=(0, 8))
         ttk.Button(workflow_row, text="SSH Workflow & Recovery Checklist",
                    command=self.show_recovery_checklist).pack(side="left")
         ttk.Label(workflow_row, text="Review prerequisites; no firmware or coding changes").pack(side="left", padx=8)
@@ -659,6 +661,59 @@ class App(tk.Tk):
             except (OSError, subprocess.TimeoutExpired) as exc:
                 self.q.put((str(exc), "Upstream status failed"))
         Thread(target=worker, daemon=True).start()
+
+    def show_activation_readiness(self):
+        """Read-only snapshot of SSH preparation; no key transfer or activation."""
+        window = tk.Toplevel(self)
+        window.title("MGU SSH Activation Readiness — Read Only")
+        window.geometry("790x480")
+        window.transient(self)
+        panel = ttk.Frame(window, padding=16)
+        panel.pack(fill="both", expand=True)
+        ttk.Label(panel, text="SSH activation readiness",
+                  font=("Segoe UI", 14, "bold")).pack(anchor="w")
+        ttk.Label(panel,
+                  text="Information only. No SSH activation, key upload, flashing, or coding changes.",
+                  wraplength=740).pack(anchor="w", pady=(3, 12))
+        key_path = Path(self.key.get().strip()).expanduser() if self.key.get().strip() else None
+        public_path = Path(str(key_path) + ".pub") if key_path else None
+        details = [
+            ("Manual architecture", self.arch_choice.get() + " (user-selected)"),
+            ("MGU IP", self.mgu_ip.get()),
+            ("Bootloader", self.software.get()),
+            ("SSH endpoint", self.ssh_status.get()),
+            ("Upstream SSH state", self.upstream_ssh_state.get()),
+            ("Debug DTC B7F8E5", self.debug_dtc.get()),
+            ("Private key", "Local file present" if key_path and key_path.is_file()
+             else "Not selected or file missing"),
+            ("Public key", "Local .pub file present" if public_path and public_path.is_file()
+             else "Not found"),
+            ("Backup preference", self.backup_state.get()),
+        ]
+        for label, value in details:
+            line = ttk.Frame(panel)
+            line.pack(fill="x", pady=2)
+            ttk.Label(line, text=label + ":", width=24).pack(side="left")
+            ttk.Label(line, text=value, wraplength=530).pack(side="left")
+        ttk.Separator(panel).pack(fill="x", pady=10)
+        ttk.Label(panel,
+                  text="Upstream project lists ID7, ID8-BDC3, and ID8-BCP workflows. "
+                       "The manual selection is not proof that an activation method is safe "
+                       "for this exact firmware.",
+                  wraplength=730).pack(anchor="w")
+        ttk.Label(panel,
+                  text="After authorized SSH activation, check port 22 and review the "
+                       "upstream status again. Port reachability does not prove authentication.",
+                  wraplength=730).pack(anchor="w", pady=(8, 0))
+        actions = ttk.Frame(panel)
+        actions.pack(fill="x", pady=(12, 0))
+        ttk.Button(actions, text="Check SSH port",
+                   command=lambda: (self.test_ssh(),
+                                    messagebox.showinfo("SSH port", "Port check started. See the main dashboard."))).pack(side="left")
+        ttk.Button(actions, text="Upstream documentation",
+                   command=lambda: webbrowser.open(
+                       "https://github.com/cauliflowermossgrape/idrive7-8-ssh-root")).pack(side="left", padx=8)
+        ttk.Button(actions, text="Close", command=window.destroy).pack(side="right")
 
     def show_recovery_checklist(self):
         """Read-only review; preserve manual architecture and backup preferences."""
